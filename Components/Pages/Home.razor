@@ -1,0 +1,116 @@
+﻿@page "/"
+@using AutoMapper
+@inject IMapper Mapper
+@inject IJSRuntime JsRuntime
+@rendermode InteractiveServer
+
+<PageTitle>Home</PageTitle>
+<h1>See Exchange Rate</h1>
+<div>Enter A Currency Code. For Example: <b>KZT</b></div>
+
+<div class="get-exchange-rates-inputs">
+    <input class="code-input" type="text"
+           maxlength="3"
+           @bind="CurrentCode" @bind:event="oninput"/>
+    <button class="run-button" @onclick="SetRates">Run</button>
+</div>
+
+@if (_isSupportedCode == true)
+{
+    <div class="data-grid">
+        <RadzenDataGrid Data="@_currencyRateToModel.Rates" TItem="@(RateModelWithId)" PageSize="20"
+                        AllowPaging="true"
+                        AllowSorting="true" AllowFiltering="true" FilterMode="FilterMode.Advanced">
+            <Columns>
+                <RadzenDataGridColumn TItem="@(RateModelWithId)" Property="@nameof(RateModelWithId.Id)" Title="№"
+                                      Width="10%" Sortable="false" Filterable="false" TextAlign="TextAlign.Left"/>
+                <RadzenDataGridColumn CssClass="currency-code" TItem="@(RateModelWithId)"
+                                      Property="@nameof(RateModelWithId.Code)"
+                                      Title="Code"
+                                      Width="40%" Sortable="false" TextAlign="TextAlign.Left"/>
+                <RadzenDataGridColumn TItem="@(RateModelWithId)" Property="@nameof(RateModelWithId.Value)"
+                                      Title="@($"Currency Rate to {_currentCode.ToUpper()}")" Filterable="false"
+                                      Width="50%" Sortable="true"
+                                      TextAlign="TextAlign.Left"/>
+            </Columns>
+        </RadzenDataGrid>
+    </div>
+
+    <div class="bottom-of-data-grid">
+        @if (_currencyRateToModel?.TimeLastUpdateUtc != null)
+        {
+            <div class="last-update-date">Last Update: @_currencyRateToModel.TimeLastUpdateUtc UTC</div>
+        }
+        <button class="download-button" @onclick="OnDownload">Download as .xlsx</button>
+    </div>
+}
+else if (_isSupportedCode == false)
+{
+    <div class="error-text">@($"{_currentCode}") Code is Unsupported</div>
+}
+
+@code {
+    private readonly HttpClient _httpClient = new();
+    private const bool ShowZeroElement = false;
+
+    private bool? _isSupportedCode = null;
+    private string? _currentCode;
+
+    private string? CurrentCode
+    {
+        get => _currentCode;
+        set => _currentCode = value?.ToUpper();
+    }
+
+    private CurrencyRateToModelWithIds? _currencyRateToModel = null;
+
+    private async Task SetRates()
+    {
+        if (string.IsNullOrEmpty(CurrentCode) || CurrentCode.Length != 3)
+            return;
+
+        try
+        {
+            var rates = await _httpClient.GetFromJsonAsync<CurrencyRateTo>($"http://localhost:5056/api/get/{CurrentCode}");
+
+            if (rates is null)
+            {
+                _isSupportedCode = false;
+                _currencyRateToModel = null;
+                return;
+            }
+
+            _isSupportedCode = true;
+            _currencyRateToModel = Mapper.Map<CurrencyRateToModelWithIds>(rates);
+
+            if (ShowZeroElement == false)
+                _currencyRateToModel.Rates.RemoveAt(0);
+        }
+        catch (HttpRequestException ex)
+        {
+            await JsRuntime.InvokeVoidAsync("console.error", ex.Message);
+            _isSupportedCode = false;
+            _currencyRateToModel = null;
+        }
+    }
+
+    private async Task OnDownload()
+    {
+        var request = new HttpRequestMessage(HttpMethod.Get, $"http://localhost:5056/api/excel/{CurrentCode}");
+        var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+
+        await JsRuntime.InvokeVoidAsync("console.log", "Response", response);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new ApplicationException("You gave wrong data or The API doesn't work like it should");
+        }
+
+        var fileName = $"{CurrentCode}.xlsx";
+        var fileBytes = await response.Content.ReadAsByteArrayAsync();
+        var fileStream = new MemoryStream(fileBytes);
+        using var streamRef = new DotNetStreamReference(stream: fileStream);
+
+        await JsRuntime.InvokeVoidAsync("downloadFileFromStream", fileName, streamRef);
+    }
+}
